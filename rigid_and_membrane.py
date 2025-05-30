@@ -2,20 +2,18 @@ import numpy as np
 from scipy.sparse import coo_matrix
 
 from scipy.sparse import eye, kron
-from scipy.sparse.linalg import spsolve
-from scipy.sparse.linalg import gmres
 from scipy.sparse.linalg import LinearOperator
+
+import pyamg
+import functools
 
 import matplotlib.tri as mtri
 
 import time
-import sys
 
-import numba as nmba
-from numba import njit, jit, prange
+from numba import njit
 
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 
 from libMobility import NBody
 import c_rigid_obj as cbodies
@@ -82,6 +80,13 @@ def main():
     rigid_pos = np.array(cb.multi_body_pos())
     rigid_pos = rigid_pos.reshape((-1, 3))
 
+    # ranges for different indices
+    full_size = 3 * (N + N_free) + 6 * N_bodies
+    rigid_range = slice(0, 3 * N_rigid)
+    free_range = slice(3 * N_rigid, 3 * (N_rigid + N_free))
+    u_rigid_range = slice(3 * N, 3 * N + 6 * N_bodies)
+    u_free_range = slice(3 * N + 6 * N_bodies, full_size)
+
     fig, ax = plot_mesh(V_free, V_fixed, T, rigid_pos)
 
     final_time = 20.0  # final time
@@ -133,46 +138,26 @@ def main():
         all_pos = np.vstack((rigid_pos,V))
         solver.setPositions(all_pos) # TODO TEMP ONLY WORKS SINCE WE AREN'T UPDATING RIGID POSITIONS
 
-        full_size = 3 * (N + N_free) + 6 * N_bodies
-        rigid_range = slice(0, 3 * N_rigid)
-        free_range = slice(3 * N_rigid, 3 * (N_rigid + N_free))
-        u_rigid_range = slice(3 * N, 3 * N + 6 * N_bodies)
-        u_free_range = slice(3 * N + 6 * N_bodies, full_size)
         RHS = np.zeros(3 * N + 6 * N_bodies + 3 * N_free, dtype=float)
         RHS[3 * N : 3 * N + 6 * N_bodies] = -rigid_force_torque
         RHS[3 * N + 6 * N_bodies :] = membrane_forces
 
-        def apply_A(vec):
-            vec = np.array(vec, dtype=float)
+        A_partial = functools.partial(
+            apply_A,
+            N=N,
+            solver=solver,
+            cb=cb,
+            Bend_mat=Bend_mat,
+            rigid_range=rigid_range,
+            free_range=free_range,
+            u_rigid_range=u_rigid_range,
+            u_free_range=u_free_range,
+        )
 
-            lam = vec[0 : 3 * N]
-            Mf, _ = solver.Mdot(forces=lam)
+        A = LinearOperator((full_size,full_size), matvec=A_partial)
 
-            u_rigid = vec[u_rigid_range]
-            Ku_rigid = cb.K_x_U(u_rigid)
-
-            u_free = vec[u_free_range]
-
-            lambda_rigid = vec[rigid_range]
-            KT_lam_rigid = cb.KT_x_Lam(lambda_rigid)
-
-            lambda_free = vec[free_range]
-
-            out = np.zeros_like(vec)
-
-            U = np.zeros_like(lam)
-            U[rigid_range] = Ku_rigid
-            U[free_range] = u_free
-
-            out[0 : 3 * N] = Mf - U
-            out[u_rigid_range] = -KT_lam_rigid
-            out[u_free_range] = lambda_free + Bend_mat.dot(u_free)
-
-            return out
-
-        A = LinearOperator((full_size,full_size), matvec=apply_A)
-
-        sol, info = gmres(A, RHS, rtol=1e-4, x0=None, restart=100, maxiter=1000)
+        sol, info = pyamg.krylov.fgmres(A, RHS, tol=1e-4, x0=None, restart=100, maxiter=1000)
+        # sol, info = gmres(A, RHS, rtol=1e-4, x0=None, restart=100, maxiter=1000)
 
         u_free = sol[u_free_range]
         end = time.time()
@@ -186,6 +171,34 @@ def main():
         if step % n_plot == 0:
             print(f"Step {step}, plotting")
             fig, ax = plot_mesh(V[0:N_free, :], V[N_free:, :], T, rigid_pos, fig, ax, i=step)
+
+def apply_A(vec, N, solver, cb, Bend_mat, rigid_range, free_range, u_rigid_range, u_free_range):
+    vec = np.array(vec, dtype=float)
+
+    lam = vec[0 : 3 * N]
+    Mf, _ = solver.Mdot(forces=lam)
+
+    u_rigid = vec[u_rigid_range]
+    Ku_rigid = cb.K_x_U(u_rigid)
+
+    u_free = vec[u_free_range]
+
+    lambda_rigid = vec[rigid_range]
+    KT_lam_rigid = cb.KT_x_Lam(lambda_rigid)
+
+    lambda_free = vec[free_range]
+
+    out = np.zeros_like(vec)
+
+    U = np.zeros_like(lam)
+    U[rigid_range] = Ku_rigid
+    U[free_range] = u_free
+
+    out[0 : 3 * N] = Mf - U
+    out[u_rigid_range] = -KT_lam_rigid
+    out[u_free_range] = lambda_free + Bend_mat.dot(u_free)
+
+    return out
 
 
 def load_rigid_data(file_name):

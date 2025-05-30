@@ -8,3 +8,4 @@ dependencies:
   - numba
   - matplotlib
   - StochasticHydroTools::libMobility
+  - pyamg
