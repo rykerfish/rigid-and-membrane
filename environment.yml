@@ -1,0 +1,10 @@
+name: membrane
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - numpy
+  - scipy
+  - numba
+  - matplotlib
+  - StochasticHydroTools::libMobility
