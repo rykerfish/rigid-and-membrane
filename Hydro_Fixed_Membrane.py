@@ -21,29 +21,20 @@ from libMobility import NBody
 
 
 def main():
-    # load the N x3 faces matrix in a file called 'faces.txt'
     T = np.loadtxt("faces.txt", dtype=int)
-    # subtract 1 from T to convert from 1-based to 0-based indexing
-    T -= 1
-    # load the N x3 vertex coordinates in a file called 'free_vertex.txt'
+    T -= 1  # subtract 1 from T to convert from 1-based to 0-based indexing
     V_free = np.loadtxt("free_vertex.txt", dtype=float)
-    # load the N x3 fixed vertex coordinates in a file called 'fixed_vertex.txt'
     V_fixed = np.loadtxt("fixed_vertex.txt", dtype=float)
-    # concatenate the free and fixed vertices
+    V_free[:, 2] = 0.0
+    V_fixed[:, 2] = 0.0
     V = np.vstack((V_free, V_fixed))
-    # number of free vertices
+
     Nfree = V_free.shape[0]
     N = V.shape[0]
 
-    # zero out the z-component of V
-    V[:, 2] = 0.0
-    print(V)
-
-    # get the diamond neighbor list
     tri_nbs = get_diamonds(T, V)
 
-    # plot
-    fig, ax = plot_mesh(V, V_fixed, T)
+    fig, ax = plot_mesh(V_free, V_fixed, T)
 
     # find mesh size as the min distance between two vertices
     mesh_size = np.inf
@@ -125,7 +116,7 @@ def main():
         V = X1.reshape((-1, 3))
         if step % 100 == 0:
             print(f"Step {step}, plotting")
-            fig, ax = plot_mesh(V, V[Nfree::, :], T, fig, ax, i=step)
+            fig, ax = plot_mesh(V[0:Nfree, :], V[Nfree:, :], T, fig, ax, i=step)
 
 
 def get_diamonds(T, V):
@@ -472,7 +463,7 @@ def assemble_willmore(tri_nbs, V, Nfree, tol=1e-5):
 
 
 def plot_mesh(
-    V,
+    V_free,
     V_fixed,
     T,
     fig=None,
@@ -514,8 +505,14 @@ def plot_mesh(
 
     # Scatter free vs fixed vertices
     ax.scatter(
-        V[:, 0], V[:, 1], V[:, 2], c=free_color, marker="o", label="Free Vertices"
+        V_free[:, 0],
+        V_free[:, 1],
+        V_free[:, 2],
+        c=free_color,
+        marker="o",
+        label="Free Vertices",
     )
+
     ax.scatter(
         V_fixed[:, 0],
         V_fixed[:, 1],
@@ -524,6 +521,8 @@ def plot_mesh(
         marker="^",
         label="Fixed Vertices",
     )
+
+    V = np.vstack((V_free, V_fixed))  # Combine free and fixed vertices
 
     # build a triangulation object
     triang = mtri.Triangulation(V[:, 0], V[:, 1], triangles=T)
