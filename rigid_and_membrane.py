@@ -1,8 +1,11 @@
 import numpy as np
-from scipy.sparse import coo_matrix
+from scipy.sparse import coo_matrix, csc_matrix
 
 from scipy.sparse import eye, kron
 from scipy.sparse.linalg import LinearOperator
+
+import scipy.sparse as spsparse
+import sksparse
 
 import pyamg
 import functools
@@ -15,8 +18,9 @@ from numba import njit
 
 import matplotlib.pyplot as plt
 
-from libMobility import NBody
+from libMobility import NBody, SelfMobility
 import c_rigid_obj as cbodies
+import sksparse.cholmod
 
 
 def main():
@@ -58,6 +62,9 @@ def main():
     solver = NBody("open", "open", "open")
     solver.setParameters()
     solver.initialize(temperature=kbt, viscosity=eta, hydrodynamicRadius=hydro_radius)
+
+    # pc_solver = SelfMobility("open", "open", "open")
+    # pc_solver.initialize(temperature=kbt, viscosity=eta, hydrodynamicRadius=hydro_radius)
 
     # scale rigid configuration to have the same blob size as the membrane
     rigid_cfg *= 2 * hydro_radius / rigid_sep
@@ -123,7 +130,7 @@ def main():
         # F_push[2] = -1.0 * max(0.0, 10.0 - dt * step)
         F_push = 0
 
-        membrane_forces = -(F_bend + bending_bc_free + F_push)
+        membrane_forces = (F_bend + bending_bc_free + F_push)
 
         rigid_force_torque = np.zeros(6 * N_bodies, dtype=float)
         rigid_force_torque[4] = (
@@ -134,13 +141,20 @@ def main():
 
         Bend_mat = dt * Dx
 
+        mob_coeff = 1.0 / (6 * np.pi * eta * hydro_radius)
+        PC_mat = make_sparse_PC_mat(
+            mob_coeff, cb, Bend_mat, N_rigid, N_free, N_fixed
+        )
+
+        PC_decomp = sksparse.cholmod.cholesky(PC_mat)
+
         # combine V and rigid_pos into a single array
         all_pos = np.vstack((rigid_pos,V))
         solver.setPositions(all_pos) # TODO TEMP ONLY WORKS SINCE WE AREN'T UPDATING RIGID POSITIONS
 
         RHS = np.zeros(3 * N + 6 * N_bodies + 3 * N_free, dtype=float)
-        RHS[3 * N : 3 * N + 6 * N_bodies] = -rigid_force_torque
-        RHS[3 * N + 6 * N_bodies :] = membrane_forces
+        RHS[u_rigid_range] = -rigid_force_torque
+        RHS[u_free_range] = membrane_forces
 
         A_partial = functools.partial(
             apply_A,
@@ -154,9 +168,17 @@ def main():
             u_free_range=u_free_range,
         )
 
+        PC = LinearOperator(
+            (full_size, full_size),
+            matvec=lambda x: PC_decomp(x),
+            dtype=np.float64,
+        )
+
         A = LinearOperator((full_size,full_size), matvec=A_partial)
 
-        sol, info = pyamg.krylov.fgmres(A, RHS, tol=1e-4, x0=None, restart=100, maxiter=1000)
+        res = []
+        sol, info = pyamg.krylov.fgmres(A, RHS, tol=1e-4, x0=None, restart=100, maxiter=1000, residuals=res, M=PC)
+        print(f"GMRES converged in {len(res)} iters, residuals: {res[-1]}")
         # sol, info = gmres(A, RHS, rtol=1e-4, x0=None, restart=100, maxiter=1000)
 
         u_free = sol[u_free_range]
@@ -171,6 +193,26 @@ def main():
         if step % n_plot == 0:
             print(f"Step {step}, plotting")
             fig, ax = plot_mesh(V[0:N_free, :], V[N_free:, :], T, rigid_pos, fig, ax, i=step)
+
+
+def make_sparse_PC_mat(mob_coeff, cb, Bend_mat, N_rigid, N_membrane, N_fix):
+    M_rigid = spsparse.diags_array([mob_coeff], offsets=0, shape=(3 * N_rigid, 3 * N_rigid), format="csc")
+    M_membrane = spsparse.diags_array([mob_coeff], offsets=0, shape=(3 * N_membrane, 3 * N_membrane), format="csc")
+    M_fix = spsparse.diags_array([mob_coeff], offsets=0, shape=(3 * N_fix, 3 * N_fix), format="csc")
+    K, _ = cb.get_K_Kinv()
+    I_membrane = eye(3*N_membrane, 3*N_membrane, format="csc")
+
+    b = spsparse.block_array(
+        [
+            [M_rigid, None, None, -K, None],
+            [None, M_membrane, None, None, -I_membrane],
+            [None, None, M_fix, None, None],
+            [-K.T, None, None, None, None],
+            [None, -I_membrane, None, None, -Bend_mat],
+        ]
+    )
+
+    return csc_matrix(b) # this cast shouldn't be needed but cholmod is a fuck
 
 def apply_A(vec, N, solver, cb, Bend_mat, rigid_range, free_range, u_rigid_range, u_free_range):
     vec = np.array(vec, dtype=float)
@@ -196,7 +238,7 @@ def apply_A(vec, N, solver, cb, Bend_mat, rigid_range, free_range, u_rigid_range
 
     out[0 : 3 * N] = Mf - U
     out[u_rigid_range] = -KT_lam_rigid
-    out[u_free_range] = lambda_free + Bend_mat.dot(u_free)
+    out[u_free_range] = -(lambda_free + Bend_mat.dot(u_free))
 
     return out
 
