@@ -7,6 +7,7 @@ from scipy.sparse import eye, kron
 from scipy.sparse.linalg import LinearOperator
 
 import scipy
+
 # from scikits import umfpack
 
 import pyamg
@@ -23,13 +24,14 @@ import pyvista as pv
 
 from libMobility import NBody, SelfMobility
 import c_rigid_obj as cbodies
+
 # import sksparse.cholmod
 
 
-def main():
+def run(k_bend):
     in_dir = "in/"
-    # file_prefix = "subd_6_"   ## change file prefix to use different membrane. subd_6 is the large membrane
-    file_prefix = ""
+    file_prefix = "subd_6_"  ## change file prefix to use different membrane. subd_6 is the large membrane
+    # file_prefix = ""
     prefix = in_dir + file_prefix
     T = np.loadtxt(prefix + "faces.txt", dtype=int)
     T -= 1  # subtract 1 from T to convert from 1-based to 0-based indexing
@@ -50,17 +52,17 @@ def main():
     rigid_sep, rigid_cfg = load_rigid_data(shell_file)
     rigid_radius = 1.0
 
-    rigid_scale = 1.0 ### this is somewhat untested but should scale the rigid particle to be larger (and handle membrane scaling as well)
+    rigid_scale = 1.0  ### this is somewhat untested but should scale the rigid particle to be larger (and handle membrane scaling as well)
     rigid_cfg *= rigid_scale  # scale the rigid configuration
     rigid_radius *= rigid_scale  # scale the rigid radius
 
-    N_bodies = 1  # number of rigid bodies requested
+    N_bodies = 9  # number of rigid bodies requested
     ### note that fewer rigid bodies may be generated if the configuration is too dense
     ### the actual number is generated (and returned) by generate_rigid_sphere_config below.
 
     rigid_X0, N_bodies = generate_rigid_sphere_config(N_bodies, rigid_radius)
     # print(np.min(scipy.spatial.distance.pdist(rigid_X0)))
-    rigid_X0[:, 2] += 2.5 * rigid_radius  # place the rigid bodies above the membrane
+    rigid_X0[:, 2] += 6.0 * rigid_radius  # place the rigid bodies above the membrane
     print("Rigid body center heights:")
     print(np.min(rigid_X0[:, 2]), np.max(rigid_X0[:, 2]))
     rigid_X0 = rigid_X0.flatten()
@@ -107,10 +109,10 @@ def main():
 
     kbt = 0.0
     eta = 1.0
-    k_bend = 1000.0
+    # k_bend = 1000.0
     k_spring = 0.0
 
-    alpha = 1.0
+    alpha = 1e-1
     m0 = 1.0 / (6 * np.pi * eta * blob_radius)  # mobility coefficient
     dt = alpha * (mesh_size**3) / (m0 * k_bend)
 
@@ -146,7 +148,7 @@ def main():
 
     # plot_mesh(V_free, V_fixed, T, rigid_X0)
 
-    final_time = 20.0  # final time
+    final_time = 50.0  # final time
     Nsteps = int(final_time / dt)  # number of time steps
 
     n_plot = 100
@@ -182,7 +184,7 @@ def main():
 
         membrane_forces = F_bend + bending_bc_free + F_push
 
-        freq = 5
+        freq = 10
         rigid_force_torque = np.zeros(6 * N_bodies, dtype=float)
         rigid_force_torque[4::6] = (  # roller torque
             8 * np.pi * eta * rigid_radius**3 * (2 * np.pi * freq)
@@ -200,12 +202,7 @@ def main():
         Bend_mat = dt * Dx
 
         mob_coeff = 1.0 / (6 * np.pi * eta * blob_radius)
-        PC_mat = make_sparse_PC_mat(
-            mob_coeff, cb, Bend_mat, N_rigid, N_free, N_fixed
-        )
-
-        print("bend mat max:", Bend_mat.max())
-        print("mob coeff:", mob_coeff)
+        PC_mat = make_sparse_PC_mat(mob_coeff, cb, Bend_mat, N_rigid, N_free, N_fixed)
 
         PC_decomp = scipy.sparse.linalg.splu(PC_mat, permc_spec="COLAMD")
         # PC_decomp = umfpack.splu(PC_mat)
@@ -213,7 +210,7 @@ def main():
         # combine V and rigid_pos into a single array
         rigid_pos = np.array(cb.multi_body_pos())
         rigid_pos = rigid_pos.reshape((-1, 3))
-        all_pos = np.vstack((rigid_pos,V))
+        all_pos = np.vstack((rigid_pos, V))
         solver.setPositions(all_pos)
 
         RHS = np.zeros(3 * N + 6 * N_bodies + 3 * N_free, dtype=float)
@@ -268,11 +265,8 @@ def main():
         print(f"Solving took {end - start:.4f} seconds")
 
         U_rigid = sol[u_rigid_range]
-        cb.evolve_X_Q(U_rigid)
+        # cb.evolve_X_Q(U_rigid)
         _, rigid_Xn = cb.getConfig()
-
-        print(f"Rigid body positions after step {step}:")
-        print(rigid_Xn.reshape((-1, 3)))
 
         # Compute new X
         X1 = X0.copy()
@@ -333,7 +327,7 @@ def make_sparse_PC_mat(mob_coeff, cb, Bend_mat, N_rigid, N_membrane, N_fix):
     )
     K, _ = cb.get_K_Kinv()
 
-    I_membrane = eye(3*N_membrane, 3*N_membrane, format="csc")
+    I_membrane = eye(3 * N_membrane, 3 * N_membrane, format="csc")
 
     b = scipy.sparse.block_array(
         [
@@ -341,14 +335,16 @@ def make_sparse_PC_mat(mob_coeff, cb, Bend_mat, N_rigid, N_membrane, N_fix):
             [None, M_membrane, None, None, -I_membrane],
             [None, None, M_fix, None, None],
             [-K.T, None, None, None, None],
-            [None, -I_membrane, None, None, -Bend_mat],
+            [None, -I_membrane, None, None, None],
         ]
     )
 
-    return csc_matrix(b) # this cast shouldn't be needed but cholmod is a fuck
+    return csc_matrix(b)  # this cast shouldn't be needed but cholmod is a fuck
 
 
-def apply_A(vec, N, solver, cb, Bend_mat, rigid_range, free_range, u_rigid_range, u_free_range):
+def apply_A(
+    vec, N, solver, cb, Bend_mat, rigid_range, free_range, u_rigid_range, u_free_range
+):
     vec = np.array(vec, dtype=float)
 
     lam = vec[0 : 3 * N]
@@ -372,7 +368,7 @@ def apply_A(vec, N, solver, cb, Bend_mat, rigid_range, free_range, u_rigid_range
 
     out[0 : 3 * N] = Mf - U
     out[u_rigid_range] = -KT_lam_rigid
-    out[u_free_range] = -(lambda_free + Bend_mat.dot(u_free))
+    out[u_free_range] = -(lambda_free)
 
     return out
 
@@ -833,8 +829,8 @@ def plot_mesh(
     # ]
 
     plotter.camera_position = [
-        (0, -10, 5),  # camera location
-        (0, 0, 2),  # focal point
+        (0, -20, 40),  # camera location
+        (0, 0, 8),  # focal point
         (0, 0, 1),  # view up direction
     ]
 
@@ -844,4 +840,4 @@ def plot_mesh(
 
 
 if __name__ == "__main__":
-    main()
+    run()
