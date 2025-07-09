@@ -281,7 +281,33 @@ def main():
         V = X1.reshape((-1, 3))
         if step % n_plot == 0:
             print(f"Step {step}, plotting")
-            plot_mesh(V[0:N_free, :], V[N_free:, :], T, rigid_Xn, i=fig_count)
+
+            n_stream_cube = 20
+            z = np.linspace(0, 10, n_stream_cube)
+            x = np.linspace(-10, 10, 2 * n_stream_cube)
+            y = np.linspace(-10, 0, n_stream_cube)
+            X, Y, Z = np.meshgrid(x, y, z)
+            cube_pts = np.vstack((X.flatten(), Y.flatten(), Z.flatten())).T
+
+            all_hydro_points = np.vstack((V, rigid_Xn.reshape((-1, 3)), cube_pts))
+            solver.setPositions(all_hydro_points)
+
+            # make a single vector out of (sol[0:full_size], np.zeros(cube_pts.shape[0] * 3))
+            F_streamlines = np.concatenate(
+                [sol[0:full_size], np.zeros(cube_pts.shape[0] * 3, dtype=sol.dtype)]
+            )
+            u_streamlines, _ = solver.Mdot(forces=F_streamlines)
+            u_streamlines = u_streamlines[full_size:].reshape((-1, 3))
+
+            plot_mesh(
+                V[0:N_free, :],
+                V[N_free:, :],
+                T,
+                rigid_Xn,
+                u_streamlines=u_streamlines,
+                cube_points=cube_pts,
+                i=fig_count,
+            )
             fig_count += 1
 
 
@@ -731,6 +757,8 @@ def plot_mesh(
     V_fixed,
     T,
     rigid_centers,
+    u_streamlines=None,
+    cube_points=None,
     i=0,
     free_color="blue",
     fixed_color="cyan",
