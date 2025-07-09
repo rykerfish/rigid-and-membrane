@@ -11,13 +11,10 @@ import scipy
 import pyamg
 import functools
 
-# import matplotlib.tri as mtri
-
 import time
 
 from numba import njit
 
-# import matplotlib.pyplot as plt
 import pyvista as pv
 
 from libMobility import NBody, SelfMobility
@@ -42,7 +39,7 @@ def main():
     N_fixed = V_fixed.shape[0]
 
     ### these are obviously the different sizes of rigid bodies.
-    ### everything is set up to resize the membrane blobs to the sise of the rigid blobs
+    ### everything is set up to resize the membrane blobs to the size of the rigid blobs
     # shell_file = "structures/shell_N_12_Rg_0_7921_Rh_1.vertex"
     shell_file = "structures/shell_N_42_Rg_0_8913_Rh_1.vertex"
     # shell_file = "structures/shell_N_162_Rg_0_9497_Rh_1.vertex"
@@ -66,7 +63,7 @@ def main():
 
     N_rigid = rigid_cfg.shape[0] * N_bodies
 
-    Quat = np.array([1.0, 0.0, 0.0, 0.0])
+    Quat = np.array([1.0, 0.0, 0.0, 0.0] * N_bodies)
 
     N = N_free + N_fixed + N_rigid
 
@@ -116,7 +113,7 @@ def main():
 
     solver = NBody("open", "open", "open")
     solver.setParameters()
-    solver.initialize(temperature=kbt, viscosity=eta, hydrodynamicRadius=blob_radius)
+    solver.initialize(viscosity=eta, hydrodynamicRadius=blob_radius)
 
     # pc_solver = SelfMobility("open", "open", "open")
     # pc_solver.initialize(temperature=kbt, viscosity=eta, hydrodynamicRadius=hydro_radius)
@@ -206,7 +203,6 @@ def main():
         # print(f"Condition number: {cond_num:.2e}")
         # u, s, vt = scipy.sparse.linalg.svds(PC_mat, ak=10)
         # print("Smallest singular value:", s.min())
-
 
 
         # import matplotlib.pyplot as plt
