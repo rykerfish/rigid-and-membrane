@@ -3,9 +3,10 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - numpy
+  - numpy <=1.24
   - scipy
   - numba
   - matplotlib
   - StochasticHydroTools::libMobility
   - pyamg
+  - pyvista
