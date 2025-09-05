@@ -7,7 +7,6 @@ dependencies:
   - scipy
   - numba
   - matplotlib
-  - pyvista
-  # - scikit-umfpack
-  # - StochasticHydroTools::libMobility
+  - StochasticHydroTools::libMobility
   - pyamg
+  - pyvista

@@ -7,22 +7,21 @@ from scipy.sparse import eye, kron
 from scipy.sparse.linalg import LinearOperator
 
 import scipy
+
 # from scikits import umfpack
 
 import pyamg
 import functools
 
-# import matplotlib.tri as mtri
-
 import time
 
 from numba import njit
 
-# import matplotlib.pyplot as plt
 import pyvista as pv
 
 from libMobility import NBody, SelfMobility
 import c_rigid_obj as cbodies
+
 # import sksparse.cholmod
 
 
@@ -43,14 +42,14 @@ def main():
     N_fixed = V_fixed.shape[0]
 
     ### these are obviously the different sizes of rigid bodies.
-    ### everything is set up to resize the membrane blobs to the sise of the rigid blobs
+    ### everything is set up to resize the membrane blobs to the size of the rigid blobs
     # shell_file = "structures/shell_N_12_Rg_0_7921_Rh_1.vertex"
     shell_file = "structures/shell_N_42_Rg_0_8913_Rh_1.vertex"
     # shell_file = "structures/shell_N_162_Rg_0_9497_Rh_1.vertex"
     rigid_sep, rigid_cfg = load_rigid_data(shell_file)
     rigid_radius = 1.0
 
-    rigid_scale = 1.0 ### this is somewhat untested but should scale the rigid particle to be larger (and handle membrane scaling as well)
+    rigid_scale = 1.0  ### this is somewhat untested but should scale the rigid particle to be larger (and handle membrane scaling as well)
     rigid_cfg *= rigid_scale  # scale the rigid configuration
     rigid_radius *= rigid_scale  # scale the rigid radius
 
@@ -67,7 +66,7 @@ def main():
 
     N_rigid = rigid_cfg.shape[0] * N_bodies
 
-    Quat = np.array([1.0, 0.0, 0.0, 0.0])
+    Quat = np.array([1.0, 0.0, 0.0, 0.0] * N_bodies)
 
     N = N_free + N_fixed + N_rigid
 
@@ -118,7 +117,7 @@ def main():
 
     solver = NBody("open", "open", "open")
     solver.setParameters()
-    solver.initialize(temperature=kbt, viscosity=eta, hydrodynamicRadius=blob_radius)
+    solver.initialize(viscosity=eta, hydrodynamicRadius=blob_radius)
 
     # pc_solver = SelfMobility("open", "open", "open")
     # pc_solver.initialize(temperature=kbt, viscosity=eta, hydrodynamicRadius=hydro_radius)
@@ -200,9 +199,7 @@ def main():
         Bend_mat = dt * Dx
 
         mob_coeff = 1.0 / (6 * np.pi * eta * blob_radius)
-        PC_mat = make_sparse_PC_mat(
-            mob_coeff, cb, Bend_mat, N_rigid, N_free, N_fixed
-        )
+        PC_mat = make_sparse_PC_mat(mob_coeff, cb, Bend_mat, N_rigid, N_free, N_fixed)
 
         print("bend mat max:", Bend_mat.max())
         print("mob coeff:", mob_coeff)
@@ -213,7 +210,7 @@ def main():
         # combine V and rigid_pos into a single array
         rigid_pos = np.array(cb.multi_body_pos())
         rigid_pos = rigid_pos.reshape((-1, 3))
-        all_pos = np.vstack((rigid_pos,V))
+        all_pos = np.vstack((rigid_pos, V))
         solver.setPositions(all_pos)
 
         RHS = np.zeros(3 * N + 6 * N_bodies + 3 * N_free, dtype=float)
@@ -359,7 +356,7 @@ def make_sparse_PC_mat(mob_coeff, cb, Bend_mat, N_rigid, N_membrane, N_fix):
     )
     K, _ = cb.get_K_Kinv()
 
-    I_membrane = eye(3*N_membrane, 3*N_membrane, format="csc")
+    I_membrane = eye(3 * N_membrane, 3 * N_membrane, format="csc")
 
     b = scipy.sparse.block_array(
         [
@@ -371,10 +368,12 @@ def make_sparse_PC_mat(mob_coeff, cb, Bend_mat, N_rigid, N_membrane, N_fix):
         ]
     )
 
-    return csc_matrix(b) # this cast shouldn't be needed but cholmod is a fuck
+    return csc_matrix(b)  # this cast shouldn't be needed but cholmod is a fuck
 
 
-def apply_A(vec, N, solver, cb, Bend_mat, rigid_range, free_range, u_rigid_range, u_free_range):
+def apply_A(
+    vec, N, solver, cb, Bend_mat, rigid_range, free_range, u_rigid_range, u_free_range
+):
     vec = np.array(vec, dtype=float)
 
     lam = vec[0 : 3 * N]
