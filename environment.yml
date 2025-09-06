@@ -1,4 +1,4 @@
-name: membrane
+name: membrane-temp
 channels:
   - conda-forge
   - defaults
@@ -7,6 +7,6 @@ dependencies:
   - scipy
   - numba
   - matplotlib
-  - StochasticHydroTools::libMobility
+  - libMobility
   - pyamg
   - pyvista

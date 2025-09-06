@@ -27,8 +27,8 @@ import c_rigid_obj as cbodies
 
 def main():
     in_dir = "in/"
-    # file_prefix = "subd_6_"   ## change file prefix to use different membrane. subd_6 is the large membrane
-    file_prefix = ""
+    file_prefix = "subd_6_"   ## change file prefix to use different membrane. subd_6 is the large membrane
+    # file_prefix = ""
     prefix = in_dir + file_prefix
     T = np.loadtxt(prefix + "faces.txt", dtype=int)
     T -= 1  # subtract 1 from T to convert from 1-based to 0-based indexing
