@@ -1,4 +1,4 @@
-name: membrane-temp
+name: membrane
 channels:
   - conda-forge
   - defaults
