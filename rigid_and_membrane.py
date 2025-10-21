@@ -28,6 +28,7 @@ from Rigid import RigidBody
 
 def main():
     in_dir = "in/"
+    save_dir = "out/implicit/"
     file_prefix = "subd_6_"  ## change file prefix to use different membrane. subd_6 is the large membrane
     # file_prefix = ""
     prefix = in_dir + file_prefix
@@ -67,7 +68,7 @@ def main():
 
     N_rigid = rigid_cfg.shape[0] * N_bodies
 
-    quat = np.repeat(np.array([1.0, 0.0, 0.0, 0.0]), N_bodies, axis=0)
+    quat = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), N_bodies)
 
     N = N_free + N_fixed + N_rigid
 
@@ -143,7 +144,6 @@ def main():
     T_final = 25.0
     Nsteps = int(T_final / dt)
 
-    save_dir = "implicit/"
     blob_fname = save_dir + "blob_pos.csv"
     rigid_fname = save_dir + "rigid_pos.csv"
 
@@ -164,7 +164,7 @@ def main():
     }
     json.dump(blob_params, open(save_dir + "params.json", "w"), indent=4)
 
-    n_plot = 1
+    n_plot = Nsteps
     n_save = 1
     n_report = 1
     fig_count = 0
@@ -206,15 +206,7 @@ def main():
         rigid_force_torque[4::6] = (  # roller torque
             8 * np.pi * eta * rigid_radius**3 * (2 * np.pi * freq)
         )
-        breakpoint()
         rigid_force_torque[2::6] = -mg  # gravity
-
-        # for rb in range(N_bodies):
-        #     rb_i = rb * 3
-        #     spring_force = k_spring * (
-        #         rigid_X0[rb_i : rb_i + 3] - rigid_Xn[rb_i : rb_i + 3]
-        #     )
-        #     rigid_force_torque[rb * 6 : rb * 6 + 3] = spring_force
 
         start = time.time()
 
@@ -305,6 +297,7 @@ def main():
                 T,
                 rigid_Xn,
                 u_streamlines=None,
+                save_dir=save_dir,
                 i=fig_count,
             )
             fig_count += 1
@@ -843,6 +836,7 @@ def plot_mesh(
     u_streamlines=None,
     pv_mesh=None,
     i=0,
+    save_dir="out/",
     surf_alpha=1.0,
 ):
 
@@ -915,7 +909,7 @@ def plot_mesh(
     ]
 
     # Save the figure to file
-    plotter.screenshot(f"out/plot{i}.png")
+    plotter.screenshot(save_dir + f"plot{i}.png")
     plotter.close()
 
 
