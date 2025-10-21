@@ -1,7 +1,6 @@
 name: membrane
 channels:
   - conda-forge
-  - defaults
 dependencies:
   - numpy <=1.24
   - scipy
@@ -10,3 +9,7 @@ dependencies:
   - libMobility
   - pyamg
   - pyvista
+  - cmocean
+  - pip
+  - pip:
+      - git+https://github.com/brennansprinkle/Rigid_Body_Light@dev_python_interface
