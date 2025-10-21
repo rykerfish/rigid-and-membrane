@@ -23,6 +23,7 @@ def main():
 def run(k_bend):
 
     in_dir = "in/"
+    save_dir = "out/explicit/"
     file_prefix = "subd_6_"  ## change file prefix to use different membrane. subd_6 is the large membrane
     # file_prefix = ""
     prefix = in_dir + file_prefix
@@ -132,9 +133,6 @@ def run(k_bend):
     print(f"Number of steps: {N_steps}")
     # print(f"Final time: {final_time}, dt: {dt}")
 
-    # save_dir = "save/" + str(int(k_bend)) + "/"
-    save_dir = "temp/"
-    # save_dir = "overnight/"
     blob_fname = save_dir + "blob_pos.csv"
     rigid_fname = save_dir + "rigid_pos.csv"
     print(f"saveing to {save_dir}")
@@ -289,6 +287,7 @@ def run(k_bend):
                 rigid_Xn,
                 u_streamlines=None,
                 pv_mesh=None,
+                save_dir=save_dir,
                 i=fig_count,
             )
             fig_count += 1
@@ -834,6 +833,7 @@ def plot_mesh(
     u_streamlines=None,
     pv_mesh=None,
     i=0,
+    save_dir="out/",
     surf_alpha=1.0,
 ):
 
@@ -906,7 +906,7 @@ def plot_mesh(
     ]
 
     # Save the figure to file
-    plotter.screenshot(f"out/plot{i}.png")
+    plotter.screenshot(save_dir + f"plot{i}.png")
     plotter.close()
 
 
