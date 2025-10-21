@@ -3,34 +3,22 @@
 import json
 import numpy as np
 from scipy.sparse import coo_matrix, csc_matrix
-
 from scipy.sparse import eye, kron
 from scipy.sparse.linalg import LinearOperator
-
 import scipy
-
-# from scikits import umfpack
-
 import pyamg
 import functools
-
-# import matplotlib.tri as mtri
-
 import time
-
-from numba import njit
-
-# import matplotlib.pyplot as plt
+from numba import njit, prange
 import pyvista as pv
-
 from libMobility import NBody, SelfMobility
-
-# import c_rigid_obj as cbodies
 from Rigid import RigidBody
 
+
 def main():
-    k_bend = 1000.0
+    k_bend = 500.0
     run(k_bend)
+
 
 def run(k_bend):
 
@@ -83,6 +71,7 @@ def run(k_bend):
     N = N_free + N_fixed + N_rigid
 
     tri_nbs = get_diamonds(T, V)
+    one_rings = get_one_rings(N_free + N_fixed, T)
 
     if file_prefix == "subd_6_":
         mesh_size = 0.01562499999999984
@@ -110,9 +99,13 @@ def run(k_bend):
 
     eta = 1.0
 
+    # alpha = 1e-1
     alpha = 1e-1
     m0 = 1.0 / (6 * np.pi * eta * blob_radius)  # mobility coefficient
     dt = alpha * (mesh_size**3) / (m0 * k_bend)
+    rest_length = 2 * blob_radius
+    k_spring = 50.0
+    mg = 5.0
 
     print("dt:", dt)
 
@@ -121,12 +114,7 @@ def run(k_bend):
     solver.initialize(viscosity=eta, hydrodynamicRadius=blob_radius)
 
     cb = RigidBody(
-        rigid_config=rigid_cfg,
-        X=rigid_X0,
-        Q=quat,
-        a=blob_radius,
-        eta=eta,
-        dt=dt
+        rigid_config=rigid_cfg, X=rigid_X0, Q=quat, a=blob_radius, eta=eta, dt=dt
     )
 
     rigid_Xn = rigid_X0.copy()
@@ -138,16 +126,17 @@ def run(k_bend):
     u_rigid_range = slice(3 * N, 3 * N + 6 * N_bodies)
     u_free_range = slice(3 * N + 6 * N_bodies, full_size)
 
-    # final_time = 2.5  # final time
-    # Nsteps = int(final_time / dt)  # number of time steps
-    N_steps = 500001
+    final_time = 20.0  # final time
+    N_steps = int(final_time / dt)  # number of time steps
+    # N_steps = 10000001
     print(f"Number of steps: {N_steps}")
     # print(f"Final time: {final_time}, dt: {dt}")
 
     # save_dir = "save/" + str(int(k_bend)) + "/"
-    # save_dir = "temp/"
-    save_dir = "overnight/"
+    save_dir = "temp/"
+    # save_dir = "overnight/"
     blob_fname = save_dir + "blob_pos.csv"
+    rigid_fname = save_dir + "rigid_pos.csv"
     print(f"saveing to {save_dir}")
 
     blob_params = {
@@ -158,18 +147,20 @@ def run(k_bend):
         "N_free": N_free,
         "N_fixed": N_fixed,
         "eta": eta,
+        "dt": dt,
+        "k_bend": k_bend,
+        "mesh_size": mesh_size,
+        "rigid_sep": rigid_sep,
     }
     json.dump(blob_params, open(save_dir + "params.json", "w"), indent=4)
 
-    n_plot = 5000
-    n_save = 1000
+    n_plot = 1
+    n_save = 200
     # n_save_streamline = 5000
     # n_save_velocity = 100
-    n_report = 100
+    n_report = 1
     fig_count = 0
     for step in range(N_steps):
-        print("step:", step)
-
         #### build membrane forces
         # bending force
         row, col, val, bending_boundary_contribution = assemble_willmore(
@@ -189,13 +180,18 @@ def run(k_bend):
             : 3 * N_free
         ].copy()  # Truncate RHS to the free‐DOFs only:
 
-        membrane_forces = F_bend + bending_bc_free
+        F_push = np.zeros(3 * N_free, dtype=float)
+        F_spring = edge_springs(V, T, one_rings, k_spring, rest_length)
+        F_push -= F_spring.T.ravel(order="F")[: 3 * N_free]
+
+        membrane_forces = F_bend + bending_bc_free + F_push
 
         freq = 3
         rigid_force_torque = np.zeros(6 * N_bodies, dtype=float)
         rigid_force_torque[4::6] = (  # roller torque
             8 * np.pi * eta * rigid_radius**3 * (2 * np.pi * freq)
         )
+        rigid_force_torque[2::6] = -mg  # gravity force
 
         start = time.time()
 
@@ -254,7 +250,6 @@ def run(k_bend):
         if step % n_report == 0:
             print("membrane heights:", np.min(V[:, 2]), np.max(V[:, 2]))
             print(f"GMRES converged in {len(res)} iters, residuals: {res[-1]}")
-        # sol, info = gmres(A, RHS, rtol=1e-4, x0=None, restart=100, maxiter=1000)
 
         sol *= norm_rhs
 
@@ -300,7 +295,16 @@ def run(k_bend):
 
         if step % n_save == 0:
             with open(blob_fname, "a") as f:
-                np.savetxt(f, np.reshape(all_pos.flatten(), (1, -1)), delimiter=",", fmt="%.6f")
+                np.savetxt(
+                    f, np.reshape(all_pos.flatten(), (1, -1)), delimiter=",", fmt="%.6f"
+                )
+            with open(rigid_fname, "a") as f:
+                np.savetxt(
+                    f,
+                    np.reshape(rigid_Xn.flatten(), (1, -1)),
+                    delimiter=",",
+                    fmt="%.6f",
+                )
 
         # if step % n_save_streamline == 0:
         #     print("saving streamlines and mesh")
@@ -346,12 +350,12 @@ def generate_rigid_sphere_config(N, R, max_attempts=10000):
     seed = 10
     np.random.seed(seed)
 
-    big_radius = 4 * R
+    big_radius = 5 * R
     centers = []
 
     def is_valid(candidate, existing_centers):
         for c in existing_centers:
-            if np.linalg.norm(candidate - c) < 2.3 * R:
+            if np.linalg.norm(candidate - c) < 2.5 * R:
                 return False
         return True
 
@@ -442,6 +446,44 @@ def load_rigid_data(file_name):
         s = float(lines[0].split()[1])
         Cfg = np.array([[float(j) for j in i.split()] for i in lines[1:]])
     return s, Cfg
+
+
+# @jit(parallel=True, fastmath=True)
+def get_one_rings(numv, faces):
+    # return vertices of one ring
+    one_ring = [set() for index in range(numv)]
+    for j in range(len(faces)):
+        t = faces[j]
+        one_ring[t[0]].update([t[1]])
+        one_ring[t[0]].update([t[2]])
+        one_ring[t[1]].update([t[0]])
+        one_ring[t[1]].update([t[2]])
+        one_ring[t[2]].update([t[0]])
+        one_ring[t[2]].update([t[1]])
+
+    one_ring = [np.array(list(OR), np.int32) for OR in one_ring]
+    return one_ring
+
+
+@njit(parallel=True, fastmath=True)
+def edge_springs(vertices, faces, one_rings, k_spring, rest_l):
+    # return spring force
+    numv = vertices.shape[0]
+    numt = faces.shape[0]
+    force_springs = np.zeros((numv, 3))
+    for i in prange(numv):
+        j = 0
+        for k in one_rings[i]:
+            E_k = vertices[k, :] - vertices[i, :]
+            E_k_n = np.linalg.norm(E_k)
+            # Hookean spring
+            force_springs[i, :] += (
+                1.0 * k_spring * (1.0 - (rest_l / E_k_n)) * E_k
+            )  # rest_l[i,j]
+            # FENE spring
+            # force_springs[i,:] += 1.0 * k_spring / (1.0 - (E_k_n/rest_l)**2) * E_k
+            j += 1
+    return force_springs
 
 
 def get_diamonds(T, V):
