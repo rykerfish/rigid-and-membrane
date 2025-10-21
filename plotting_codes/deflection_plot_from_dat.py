@@ -108,7 +108,7 @@ def update_scene(rt: TkOptiX, rigid_colors) -> None:
         "spheres", params.rigid_pos, r=params.r_b, c=rigid_colors, mat="plastic"
     )
     rt.update_graph("mesh", pos=params.V)
-    rt.save_image("./optix/frame_{:05d}.png".format(params.n))
+    rt.save_image("../img/optix/frame_{:05d}.png".format(params.n))
 
 
 def face_2_edge(faces):
@@ -158,14 +158,15 @@ def map_to_colors(x, cm_name: str) -> np.ndarray:
 
 def main():
 
-    fname = "implicit/blob_pos.bin"
-    bin_params = json.load(open("implicit/binary_metadata.json", "r"))
+    data_dir = "../out/implicit/"
+    fname = data_dir + "blob_pos.bin"
+    bin_params = json.load(open(data_dir + "binary_metadata.json", "r"))
     blob_dat = np.fromfile(fname, bin_params["dtype"])
     blob_dat = np.reshape(blob_dat, (bin_params["n_rows"], bin_params["row_size"]))
     subsample_rate = 4
     blob_dat = blob_dat[0::subsample_rate, :]
 
-    my_params = json.load(open("implicit/params.json", "r"))
+    my_params = json.load(open(data_dir + "params.json", "r"))
     N_per = my_params["N_blobs_per_sphere"]
     N_rigid_blobs = N_per * my_params["N_spheres"]
     free_blobs = my_params["N_free"]
@@ -223,7 +224,7 @@ def main():
     rt.setup_material("thin", m_thin_walled)
     rt.setup_material("glass", m_clear_glass)
 
-    file_prefix = "in/subd_6_"
+    file_prefix = "../in/subd_6_"
     T = np.loadtxt(file_prefix + "faces.txt", dtype=int)
     T -= 1
 
