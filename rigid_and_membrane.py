@@ -1,5 +1,6 @@
 # import os
 # os.environ["OMP_NUM_THREADS"] = "1"
+import json
 import numpy as np
 from scipy.sparse import coo_matrix, csc_matrix
 
@@ -12,22 +13,22 @@ import scipy
 
 import pyamg
 import functools
-
 import time
-
-from numba import njit
+from numba import njit, prange
 
 import pyvista as pv
 
 from libMobility import NBody, SelfMobility
-import c_rigid_obj as cbodies
+
+# import c_rigid_obj as cbodies
+from Rigid import RigidBody
 
 # import sksparse.cholmod
 
 
 def main():
     in_dir = "in/"
-    file_prefix = "subd_6_"   ## change file prefix to use different membrane. subd_6 is the large membrane
+    file_prefix = "subd_6_"  ## change file prefix to use different membrane. subd_6 is the large membrane
     # file_prefix = ""
     prefix = in_dir + file_prefix
     T = np.loadtxt(prefix + "faces.txt", dtype=int)
@@ -53,24 +54,25 @@ def main():
     rigid_cfg *= rigid_scale  # scale the rigid configuration
     rigid_radius *= rigid_scale  # scale the rigid radius
 
-    N_bodies = 1  # number of rigid bodies requested
+    N_bodies = 9  # number of rigid bodies requested
     ### note that fewer rigid bodies may be generated if the configuration is too dense
     ### the actual number is generated (and returned) by generate_rigid_sphere_config below.
 
     rigid_X0, N_bodies = generate_rigid_sphere_config(N_bodies, rigid_radius)
     # print(np.min(scipy.spatial.distance.pdist(rigid_X0)))
-    rigid_X0[:, 2] += 2.5 * rigid_radius  # place the rigid bodies above the membrane
+    rigid_X0[:, 2] += 5.0 * rigid_radius  # place the rigid bodies above the membrane
     print("Rigid body center heights:")
     print(np.min(rigid_X0[:, 2]), np.max(rigid_X0[:, 2]))
     rigid_X0 = rigid_X0.flatten()
 
     N_rigid = rigid_cfg.shape[0] * N_bodies
 
-    Quat = np.array([1.0, 0.0, 0.0, 0.0] * N_bodies)
+    quat = np.repeat(np.array([1.0, 0.0, 0.0, 0.0]), N_bodies, axis=0)
 
     N = N_free + N_fixed + N_rigid
 
     tri_nbs = get_diamonds(T, V)
+    one_rings = get_one_rings(N_free + N_fixed, T)
 
     # find mesh size as the min distance between two vertices
     # mesh_size = np.inf
@@ -106,10 +108,12 @@ def main():
 
     kbt = 0.0
     eta = 1.0
-    k_bend = 1000.0
-    k_spring = 0.0
+    k_bend = 500.0
+    rest_length = 2 * blob_radius
+    k_spring = 50.0
+    mg = 5.0
 
-    alpha = 1.0
+    alpha = 5.0
     m0 = 1.0 / (6 * np.pi * eta * blob_radius)  # mobility coefficient
     dt = alpha * (mesh_size**3) / (m0 * k_bend)
 
@@ -119,20 +123,13 @@ def main():
     solver.setParameters()
     solver.initialize(viscosity=eta, hydrodynamicRadius=blob_radius)
 
-    # pc_solver = SelfMobility("open", "open", "open")
-    # pc_solver.initialize(temperature=kbt, viscosity=eta, hydrodynamicRadius=hydro_radius)
-
     # scale rigid configuration to have the same blob size as the membrane
     # rigid_cfg *= 2 * blob_radius / rigid_sep
     # rigid_radius *= 2 * blob_radius / rigid_sep
 
-    cb = cbodies.CManyBodies()
-    cb.setBlkPC(False)
-    cb.setWallPC(False)
-    cb.setParameters(N_rigid, blob_radius, dt, kbt, eta, np.array([0, 0, 0]), rigid_cfg)
-
-    cb.setConfig(rigid_X0, Quat)
-    cb.set_K_mats()
+    cb = RigidBody(
+        rigid_config=rigid_cfg, X=rigid_X0, Q=quat, a=blob_radius, eta=eta, dt=dt
+    )
 
     rigid_Xn = rigid_X0.copy()
 
@@ -143,13 +140,33 @@ def main():
     u_rigid_range = slice(3 * N, 3 * N + 6 * N_bodies)
     u_free_range = slice(3 * N + 6 * N_bodies, full_size)
 
-    # plot_mesh(V_free, V_fixed, T, rigid_X0)
+    T_final = 25.0
+    Nsteps = int(T_final / dt)
 
-    final_time = 20.0  # final time
-    Nsteps = int(final_time / dt)  # number of time steps
+    save_dir = "implicit/"
+    blob_fname = save_dir + "blob_pos.csv"
+    rigid_fname = save_dir + "rigid_pos.csv"
 
-    n_plot = 100
-    n_report = 5
+    blob_params = {
+        "rigid_radius": rigid_radius,
+        "blob_radius": blob_radius,
+        "N_spheres": N_bodies,
+        "N_blobs_per_sphere": rigid_cfg.shape[0],
+        "N_free": N_free,
+        "N_fixed": N_fixed,
+        "eta": eta,
+        "dt": dt,
+        "k_bend": k_bend,
+        "mesh_size": mesh_size,
+        "rigid_sep": rigid_sep,
+        "k_spring": k_spring,
+        "alpha": alpha,
+    }
+    json.dump(blob_params, open(save_dir + "params.json", "w"), indent=4)
+
+    n_plot = 1
+    n_save = 1
+    n_report = 1
     fig_count = 0
     for step in range(Nsteps):
         # --- Implicit update: solve for dX --- # TODO outdated, update the equation
@@ -160,8 +177,9 @@ def main():
         row, col, val, bending_boundary_contribution = assemble_willmore(
             tri_nbs, V, N_free
         )
+        val *= k_bend
         D = coo_matrix((val, (row, col)), shape=(N_free, N_free)).tocsr()
-        D *= k_bend
+
         bending_boundary_contribution *= k_bend
         Dx = kron(
             D, eye(3, format="csr")
@@ -177,6 +195,8 @@ def main():
         ].copy()  # Truncate RHS to the free‐DOFs only:
 
         F_push = np.zeros(3 * N_free, dtype=float)
+        F_spring = edge_springs(V, T, one_rings, k_spring, rest_length)
+        F_push -= F_spring.T.ravel(order="F")[: 3 * N_free]
         # F_push[2] = -10.0 * max(0.0, 10.0 - dt * step)
 
         membrane_forces = F_bend + bending_bc_free + F_push
@@ -186,6 +206,8 @@ def main():
         rigid_force_torque[4::6] = (  # roller torque
             8 * np.pi * eta * rigid_radius**3 * (2 * np.pi * freq)
         )
+        breakpoint()
+        rigid_force_torque[2::6] = -mg  # gravity
 
         # for rb in range(N_bodies):
         #     rb_i = rb * 3
@@ -202,13 +224,12 @@ def main():
         PC_mat = make_sparse_PC_mat(mob_coeff, cb, Bend_mat, N_rigid, N_free, N_fixed)
 
         print("bend mat max:", Bend_mat.max())
-        print("mob coeff:", mob_coeff)
 
         PC_decomp = scipy.sparse.linalg.splu(PC_mat, permc_spec="COLAMD")
         # PC_decomp = umfpack.splu(PC_mat)
 
         # combine V and rigid_pos into a single array
-        rigid_pos = np.array(cb.multi_body_pos())
+        rigid_pos = np.array(cb.get_blob_positions())
         rigid_pos = rigid_pos.reshape((-1, 3))
         all_pos = np.vstack((rigid_pos, V))
         solver.setPositions(all_pos)
@@ -265,8 +286,8 @@ def main():
         print(f"Solving took {end - start:.4f} seconds")
 
         U_rigid = sol[u_rigid_range]
-        cb.evolve_X_Q(U_rigid)
-        _, rigid_Xn = cb.getConfig()
+        cb.evolve_rigid_bodies(U_rigid)
+        rigid_Xn, _ = cb.get_config()
 
         print(f"Rigid body positions after step {step}:")
         print(rigid_Xn.reshape((-1, 3)))
@@ -278,39 +299,64 @@ def main():
         V = X1.reshape((-1, 3))
         if step % n_plot == 0:
             print(f"Step {step}, plotting")
-
-            n_stream_cube = 20
-            z = np.linspace(0, 10, n_stream_cube)
-            x = np.linspace(-10, 10, 2 * n_stream_cube)
-            y = np.linspace(-10, 0, n_stream_cube)
-            X, Y, Z = np.meshgrid(x, y, z)
-            cube_pts = np.vstack((X.flatten(), Y.flatten(), Z.flatten())).T
-
-            all_hydro_points = np.vstack((V, rigid_Xn.reshape((-1, 3)), cube_pts))
-            solver.setPositions(all_hydro_points)
-
-            # make a single vector out of (sol[0:full_size], np.zeros(cube_pts.shape[0] * 3))
-            F_streamlines = np.concatenate(
-                [sol[0:full_size], np.zeros(cube_pts.shape[0] * 3, dtype=sol.dtype)]
-            )
-            u_streamlines, _ = solver.Mdot(forces=F_streamlines)
-            u_streamlines = u_streamlines[full_size:].reshape((-1, 3))
-
             plot_mesh(
                 V[0:N_free, :],
                 V[N_free:, :],
                 T,
                 rigid_Xn,
-                u_streamlines=u_streamlines,
-                cube_points=cube_pts,
+                u_streamlines=None,
                 i=fig_count,
             )
             fig_count += 1
 
+        if step % n_save == 0:
+            with open(blob_fname, "a") as f:
+                np.savetxt(
+                    f, np.reshape(all_pos.flatten(), (1, -1)), delimiter=",", fmt="%.6f"
+                )
+            with open(rigid_fname, "a") as f:
+                np.savetxt(
+                    f,
+                    np.reshape(rigid_Xn.flatten(), (1, -1)),
+                    delimiter=",",
+                    fmt="%.6f",
+                )
+
+        # if step % n_plot == 0:
+        #     print(f"Step {step}, plotting")
+
+        #     n_stream_cube = 20
+        #     z = np.linspace(0, 10, n_stream_cube)
+        #     x = np.linspace(-10, 10, 2 * n_stream_cube)
+        #     y = np.linspace(-10, 0, n_stream_cube)
+        #     X, Y, Z = np.meshgrid(x, y, z)
+        #     cube_pts = np.vstack((X.flatten(), Y.flatten(), Z.flatten())).T
+
+        #     all_hydro_points = np.vstack((V, rigid_Xn.reshape((-1, 3)), cube_pts))
+        #     solver.setPositions(all_hydro_points)
+
+        #     # make a single vector out of (sol[0:full_size], np.zeros(cube_pts.shape[0] * 3))
+        #     F_streamlines = np.concatenate(
+        #         [sol[0:full_size], np.zeros(cube_pts.shape[0] * 3, dtype=sol.dtype)]
+        #     )
+        #     u_streamlines, _ = solver.Mdot(forces=F_streamlines)
+        #     u_streamlines = u_streamlines[full_size:].reshape((-1, 3))
+
+        #     plot_mesh(
+        #         V[0:N_free, :],
+        #         V[N_free:, :],
+        #         T,
+        #         rigid_Xn,
+        #         u_streamlines=u_streamlines,
+        #         cube_points=cube_pts,
+        #         i=fig_count,
+        #     )
+        #     fig_count += 1
+
 
 def generate_rigid_sphere_config(N, R, max_attempts=10000):
-    seed = 10
-    np.random.seed(seed)
+    # seed = 10
+    # np.random.seed(seed)
 
     big_radius = 4 * R
     centers = []
@@ -354,7 +400,7 @@ def make_sparse_PC_mat(mob_coeff, cb, Bend_mat, N_rigid, N_membrane, N_fix):
     M_fix = scipy.sparse.diags_array(
         [mob_coeff], offsets=0, shape=(3 * N_fix, 3 * N_fix), format="csc"
     )
-    K, _ = cb.get_K_Kinv()
+    K = cb.get_K()
 
     I_membrane = eye(3 * N_membrane, 3 * N_membrane, format="csc")
 
@@ -380,12 +426,12 @@ def apply_A(
     Mf, _ = solver.Mdot(forces=lam)
 
     u_rigid = vec[u_rigid_range]
-    Ku_rigid = cb.K_x_U(u_rigid)
+    Ku_rigid = cb.K_dot(u_rigid)
 
     u_free = vec[u_free_range]
 
     lambda_rigid = vec[rigid_range]
-    KT_lam_rigid = cb.KT_x_Lam(lambda_rigid)
+    KT_lam_rigid = cb.KT_dot(lambda_rigid)
 
     lambda_free = vec[free_range]
 
@@ -400,6 +446,44 @@ def apply_A(
     out[u_free_range] = -(lambda_free + Bend_mat.dot(u_free))
 
     return out
+
+
+# @jit(parallel=True, fastmath=True)
+def get_one_rings(numv, faces):
+    # return vertices of one ring
+    one_ring = [set() for index in range(numv)]
+    for j in range(len(faces)):
+        t = faces[j]
+        one_ring[t[0]].update([t[1]])
+        one_ring[t[0]].update([t[2]])
+        one_ring[t[1]].update([t[0]])
+        one_ring[t[1]].update([t[2]])
+        one_ring[t[2]].update([t[0]])
+        one_ring[t[2]].update([t[1]])
+
+    one_ring = [np.array(list(OR), np.int32) for OR in one_ring]
+    return one_ring
+
+
+@njit(parallel=True, fastmath=True)
+def edge_springs(vertices, faces, one_rings, k_spring, rest_l):
+    # return spring force
+    numv = vertices.shape[0]
+    numt = faces.shape[0]
+    force_springs = np.zeros((numv, 3))
+    for i in prange(numv):
+        j = 0
+        for k in one_rings[i]:
+            E_k = vertices[k, :] - vertices[i, :]
+            E_k_n = np.linalg.norm(E_k)
+            # Hookean spring
+            force_springs[i, :] += (
+                1.0 * k_spring * (1.0 - (rest_l / E_k_n)) * E_k
+            )  # rest_l[i,j]
+            # FENE spring
+            # force_springs[i,:] += 1.0 * k_spring / (1.0 - (E_k_n/rest_l)**2) * E_k
+            j += 1
+    return force_springs
 
 
 def load_rigid_data(file_name):
@@ -757,42 +841,15 @@ def plot_mesh(
     T,
     rigid_centers,
     u_streamlines=None,
-    cube_points=None,
+    pv_mesh=None,
     i=0,
-    free_color="blue",
-    fixed_color="cyan",
-    surf_color=(0.1, 0.55, 0.85),
     surf_alpha=1.0,
 ):
-    """
-    Plot a 3D triangular mesh with free and fixed vertices using PyVista.
 
-    Parameters
-    ----------
-    V_free : (n,3) array
-        Free vertex coordinates.
-    V_fixed : (m,3) array
-        Fixed vertex coordinates.
-    T : (k,3) int array
-        Triangle indices.
-    rigid_cfg : (r,3) array
-        Rigid body vertex positions.
-    i : int
-        Frame index for saving image.
-    free_color : str or RGB tuple
-        Color for free vertices.
-    fixed_color : str or RGB tuple
-        Color for fixed vertices.
-    surf_color : RGB tuple
-        Color for the mesh surface.
-    surf_alpha : float
-        Opacity of the surface.
-
-    Returns
-    -------
-    plotter : pyvista.Plotter
-        The PyVista plotter object.
-    """
+    teal = np.array([67, 179, 174]) / 255.0
+    yellow = np.array([255, 133, 0]) / 255.0
+    pank = np.array([255, 0, 144]) / 255.0
+    pants = np.array([65, 105, 225]) / 255.0
 
     # Combine vertices
     V = np.vstack((V_free, V_fixed))
@@ -804,64 +861,56 @@ def plot_mesh(
     plotter = pv.Plotter(off_screen=True)
     plotter.set_background("white")
 
+    # Directional light (simulates sunlight)
+    light1 = pv.Light(light_type="headlight")
+    light1.intensity = 0.8
+    plotter.add_light(light1)
+
+    plotter.enable_shadows()
+    # plotter.shadow_map_resolution = 4096
+
     # Add surface mesh
     plotter.add_mesh(
         mesh,
-        color=surf_color,
         opacity=surf_alpha,
         show_edges=False,
         scalars=V[:, 2],  # Color by Z value
-        cmap="turbo",
-        clim=[-0.8, 0.8],
-    )
-
-    # Add free vertices
-    # plotter.add_points(
-    #     V_free,
-    #     color=free_color,
-    #     point_size=8,
-    #     render_points_as_spheres=True,
-    #     label="Free Vertices",
-    # )
-
-    # Add fixed vertices
-    plotter.add_points(
-        V_fixed,
-        color=fixed_color,
-        point_size=8,
-        render_points_as_spheres=True,
-        label="Fixed Vertices",
+        cmap="balance",
+        clim=[-3.0, 3.0],
+        smooth_shading=True,
+        specular=0.5,
+        specular_power=25,
     )
 
     R = 1.0
     rigid_centers = rigid_centers.reshape((-1, 3))
-    center_ind = 0
     for center in rigid_centers:
         sphere = pv.Sphere(
-            radius=R, center=center, theta_resolution=30, phi_resolution=30
+            radius=R, center=center, theta_resolution=128, phi_resolution=128
         )
 
-        if center_ind == 0:
-            color = "darkslateblue"
-        else:
-            color = "skyblue"
-        center_ind += 1
+        plotter.add_mesh(
+            sphere, color=yellow, smooth_shading=True, specular=0.5, specular_power=15
+        )
 
-        plotter.add_mesh(sphere, color=color, smooth_shading=True)
+    if u_streamlines is not None and pv_mesh is not None:
+        pv_mesh["vectors"] = u_streamlines
+        stream, src = pv_mesh.streamlines(
+            "vectors",
+            integration_direction="forward",
+            return_source=True,
+            terminal_speed=1e-2,
+            n_points=150,
+            source_radius=7.0,
+            max_length=5.0,
+        )
+        plotter.add_mesh(stream.tube(radius=0.1))
 
-    # Add legend and axes
-    plotter.add_legend()
     plotter.show_axes()
 
-    # plotter.camera_position = [
-    #     (20, -20, 8),  # camera location
-    #     (0, 0, 0),  # focal point
-    #     (0, 0, 1),  # view up direction
-    # ]
-
     plotter.camera_position = [
-        (0, -10, 5),  # camera location
-        (0, 0, 2),  # focal point
+        (0, -30, 10),  # camera location
+        (0, 0, 3),  # focal point
         (0, 0, 1),  # view up direction
     ]
 
